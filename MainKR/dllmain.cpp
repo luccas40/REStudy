@@ -2,6 +2,7 @@
 #include <windows.h>
 #include "mem.h"
 #include <iostream>
+#include <sstream>
 #include "Offsets.h"
 #define EXTERN_DLL_EXPORT extern "C" __declspec(dllexport)
 
@@ -9,22 +10,35 @@ EXTERN_DLL_EXPORT int GetMainVersion()
 {
     return 1;
 }
-
-
-BOOL __cdecl HookedProtocolHandler(int HeadCode, BYTE* ReceiveBuffer, int Size, BOOL bEncrypted) 
+std::string GetHexString(BYTE* packet, int start, int end) 
 {
-    std::cout << "Received Packet: ";
-    for (int i = 0; i < Size; i++) {
-        std::cout << std::hex << std::uppercase << (int)*(ReceiveBuffer + i) << " ";
+    std::stringstream buffer;
+    for (int i = start; i < end; i++) {
+        buffer << std::hex << std::uppercase << (int)*(packet + i) << " ";
     }
-    std::cout << std::endl;
-    return OriginalProtocolHandler(HeadCode, ReceiveBuffer, Size, bEncrypted);
+    return buffer.str();
 }
 
 
+//hooking into a __thiscall is messy
+//we have to send to a __fastcall which sends the EDX register too
+void __fastcall SendPacketHook(BYTE* This, void* _EDX, BYTE* packet, size_t packetSize, int shouldEncrypt, int noidea) {
 
+    //std::cout << "Hooked Func is: " << packetSize << " " << arg2 << " " << arg3 << std::endl;
+    std::cout << "Send Packet: " << GetHexString(packet, 0, packetSize) << std::endl;
+    return OriginalSendPacket(This, packet, packetSize, 0, noidea);
+}
 
+BOOL __cdecl HookedProtocolHandler(int HeadCode, BYTE* ReceiveBuffer, int Size, BOOL bEncrypted) 
+{
+    BYTE* buf = new BYTE[Size];
+    memcpy(buf, ReceiveBuffer, Size);
 
+    typedef int (*blabla)(BYTE, BYTE*, size_t);
+    ((blabla)0x00db5e03)(HeadCode, buf, Size);
+    std::cout << "Received Packet: " << GetHexString(buf, 0, Size) << std::endl;
+    return OriginalProtocolHandler(HeadCode, ReceiveBuffer, Size, bEncrypted);
+}
 
 void WaitEqual(BYTE* ptr, BYTE value) 
 {
@@ -32,13 +46,6 @@ void WaitEqual(BYTE* ptr, BYTE value)
         Sleep(1);
     }
 }
-
-
-
-
-
-
-
 
 int __cdecl MyWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR szCmdLine, int nCmdShow) 
 {
@@ -48,11 +55,28 @@ int __cdecl MyWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR szCmdLi
 
     mem::SetByte((BYTE*)GAMEGUARD_755_CMP, 0x75);
     mem::NOP((BYTE*)GAMEGUARD_755_CMP2, 2);
-
-    //memset((void*)IP_ADDRESS, 0, 24);
-    //memcpy((void*)IP_ADDRESS, "192.168.1.250", 13);
+    
+    memset((void*)IP_ADDRESS, 0, 24);
+    memcpy((void*)IP_ADDRESS, "192.168.1.250", 13);
 
     OriginalProtocolHandler = (ProtocolHandler)mem::TrampHook((BYTE*)PROTOCOL_HANDLER, (BYTE*)HookedProtocolHandler, 5);
+    OriginalSendPacket = (SendPacket)mem::TrampHook((BYTE*)SEND_PACKET, (BYTE*)SendPacketHook, 8);
+
+    mem::NOP((BYTE*)LOGIN_USERPASS_BUXCONVERTER, 26);
+    mem::Write((BYTE*)new BYTE[3]{ 0xc2, 0x0c, 0 }, (BYTE*)XOR32_DATASEND_ENCRYPTION, 3);
+    mem::NOP((BYTE*)POSSIblE_PACKET_TWISTER_RECEIV, 5);    
+    mem::NOP((BYTE*)POSSIblE_PACKET_TWISTER_SEND, 5);
+
+    //FIX SHOW LOGIN SCREEN
+    //this will make the client use the argument rather than the local variable 
+    //because the local variable is the "decrypted" version of the argument
+    //but since we are not encrypting anything we dont need the local variable
+    //this is only for this packet apparently
+    //replace the LEA with the MOV
+    //assign the local variable with the argument rather than the decrypted stuff
+    //then we need to fix the comparison to throw the error
+    mem::Write((BYTE*)(new BYTE[6]{ 0x8b, 0x85, 0x08, 0, 0, 0 }), (BYTE*)0x0134ba2a, 6);
+    mem::SetByte((BYTE*)0x0134baf9, 0xEB); //was 0x75 JNE replaced with 0xEB JMP
 
 
     //return to the rest of the original function
@@ -63,20 +87,14 @@ int __cdecl MyWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PSTR szCmdLi
 
 DWORD WINAPI MainThread(LPVOID param)
 {
-    //AllocConsole();
-    //freopen_s((FILE**)stdout, "CONOUT$", "w", stdout);
-    freopen_s((FILE**)stdout, "output.txt", "w", stdout);
+    AllocConsole();
+    freopen_s((FILE**)stdout, "CONOUT$", "w", stdout);
+    //freopen_s((FILE**)stdout, "output.txt", "w", stdout);
     WaitEqual((BYTE*)THEMIDA_BS_WAIT, 0);
     OriginalWinMain = (WinMainC)mem::TrampHook((BYTE*)WIN_MAIN, (BYTE*)MyWinMain, 8);
     std::cout << "Done Hooking" << std::endl;
     return 0;
 }
-
-
-
-
-
-
 
 BOOL APIENTRY DllMain( HMODULE hModule,
                        DWORD  ul_reason_for_call,
